@@ -31,8 +31,6 @@ pipeline {
         SKIP_PIPELINE = "false"
 
         CURRENT_COMMIT = ""
-
-        ROLLBACK_DONE = "false"
     }
 
 
@@ -41,7 +39,7 @@ pipeline {
 
         /*
          * ==================================================
-         * CHECKOUT FROM GITHUB
+         * CHECKOUT
          * ==================================================
          */
 
@@ -81,9 +79,6 @@ pipeline {
                     echo ""
                     echo "Commit message:"
                     git log -1 --pretty=%B
-
-                    echo ""
-                    echo "Checkout completed."
                 '''
             }
         }
@@ -91,21 +86,8 @@ pipeline {
 
         /*
          * ==================================================
-         * DETECT JENKINS ROLLBACK COMMIT
+         * CHECK FOR JENKINS ROLLBACK COMMIT
          * ==================================================
-         *
-         * Prevents:
-         *
-         * Jenkins
-         *   ↓
-         * GitHub revert
-         *   ↓
-         * webhook
-         *   ↓
-         * Jenkins
-         *   ↓
-         * another revert
-         *
          */
 
         stage('Check Rollback Commit') {
@@ -132,8 +114,7 @@ JENKINS ROLLBACK COMMIT DETECTED
 
 This commit was created by Jenkins.
 
-Deployment will be skipped.
-Another rollback will NOT be created.
+Skipping deployment and rollback.
 '''
 
                         env.SKIP_PIPELINE = "true"
@@ -154,13 +135,17 @@ Another rollback will NOT be created.
          *
          * IMPORTANT:
          *
-         * This runs BEFORE deployment.
+         * This happens BEFORE backup and deployment.
          *
-         * If PHP syntax fails:
+         * If PHP is broken:
          *
-         * - Deploy is never executed.
-         * - Existing website remains unchanged.
-         * - Post failure will rollback GitHub.
+         *   PHP check FAILS
+         *       ↓
+         *   Deploy is skipped
+         *       ↓
+         *   Existing website stays unchanged
+         *       ↓
+         *   GitHub rollback happens in post/failure
          *
          */
 
@@ -254,7 +239,7 @@ Another rollback will NOT be created.
                     echo "Selenium:"
 
                     ${PYTHON} -c \
-                        "import selenium; print(selenium.__version__)"
+                        "import selenium; print('Selenium:', selenium.__version__)"
 
                     echo ""
                     echo "Chromium:"
@@ -263,6 +248,7 @@ Another rollback will NOT be created.
 
                     echo ""
                     echo "SELENIUM ENVIRONMENT PASSED"
+                    echo "========================================"
                 '''
             }
         }
@@ -272,9 +258,6 @@ Another rollback will NOT be created.
          * ==================================================
          * BACKUP CURRENT WEBSITE
          * ==================================================
-         *
-         * Only reached after PHP validation passes.
-         *
          */
 
         stage('Backup Current Version') {
@@ -346,10 +329,10 @@ Another rollback will NOT be created.
                 script {
 
                     /*
-                     * Set this BEFORE rsync.
+                     * Mark deployment BEFORE rsync.
                      *
-                     * If rsync partially changes the website
-                     * and then fails, rollback will happen.
+                     * This ensures that a partial rsync failure
+                     * also triggers website rollback.
                      */
 
                     env.DEPLOYED = "true"
@@ -371,7 +354,9 @@ Another rollback will NOT be created.
                         "${WEB_DIR}/"
 
                     echo ""
+                    echo "========================================"
                     echo "DEPLOYMENT COMPLETED"
+                    echo "========================================"
                 '''
             }
         }
@@ -423,7 +408,9 @@ Another rollback will NOT be created.
                     fi
 
                     echo ""
+                    echo "========================================"
                     echo "HTTP TEST PASSED"
+                    echo "========================================"
                 '''
             }
         }
@@ -452,6 +439,15 @@ Another rollback will NOT be created.
                     echo "========================================"
                     echo "PYTHON SELENIUM TEST"
                     echo "========================================"
+
+                    if [ ! -f "${WORKSPACE}/tests/selenium_test.py" ]; then
+
+                        echo ""
+                        echo "ERROR:"
+                        echo "tests/selenium_test.py does not exist."
+
+                        exit 1
+                    fi
 
                     ${PYTHON} \
                         "${WORKSPACE}/tests/selenium_test.py"
@@ -520,16 +516,23 @@ The new version is live.
          * FAILURE
          * ==================================================
          *
-         * THIS IS THE IMPORTANT PART.
+         * This executes for:
          *
-         * GitHub rollback happens even if the failure
-         * occurred during PHP syntax checking.
+         * - PHP syntax errors
+         * - Selenium errors
+         * - HTTP errors
+         * - deployment errors
+         * - environment errors
          *
          */
 
         failure {
 
             script {
+
+                /*
+                 * Never rollback a rollback commit.
+                 */
 
                 if (env.SKIP_PIPELINE == "true") {
 
@@ -549,8 +552,8 @@ No second rollback will be performed.
                      * WEBSITE ROLLBACK
                      * ======================================
                      *
-                     * Only restore website if deployment
-                     * actually started.
+                     * If deployment started, restore
+                     * the previous website.
                      *
                      */
 
@@ -558,7 +561,7 @@ No second rollback will be performed.
 
                         echo '''
 ========================================
-DEPLOYMENT FAILED
+PIPELINE FAILED
 ========================================
 
 Restoring previous website version...
@@ -608,7 +611,7 @@ Restoring previous website version...
 
                         echo '''
 ========================================
-NO DEPLOYMENT WAS PERFORMED
+NO WEBSITE DEPLOYMENT
 ========================================
 
 The existing website was not changed.
@@ -621,12 +624,10 @@ The existing website was not changed.
                      * GITHUB ROLLBACK
                      * ======================================
                      *
-                     * This happens for:
+                     * IMPORTANT:
                      *
-                     * PHP syntax failure
-                     * Selenium failure
-                     * HTTP failure
-                     * deployment failure
+                     * This runs even when PHP syntax
+                     * checking fails.
                      *
                      */
 
@@ -635,7 +636,7 @@ The existing website was not changed.
 GITHUB ROLLBACK
 ========================================
 
-Reverting failed commit:
+Failed commit:
 '''
 
                     echo "${env.CURRENT_COMMIT}"
@@ -647,7 +648,7 @@ Reverting failed commit:
                         cd "${WORKSPACE}"
 
                         echo ""
-                        echo "Checking GitHub branch..."
+                        echo "Fetching latest GitHub main..."
 
                         git fetch origin "${GITHUB_BRANCH}"
 
@@ -664,30 +665,33 @@ Reverting failed commit:
 
 
                         /*
-                         * Only revert if GitHub still points
-                         * to the commit Jenkins tested.
+                         * Safety check.
+                         *
+                         * Only revert if nobody has pushed
+                         * another commit since Jenkins checked
+                         * this commit.
                          */
 
                         if [ "${REMOTE_COMMIT}" != "${CURRENT_COMMIT}" ]; then
 
                             echo ""
                             echo "========================================"
-                            echo "GITHUB CHANGED SINCE JENKINS CHECKOUT"
+                            echo "GITHUB CHANGED"
                             echo "========================================"
 
                             echo ""
-                            echo "GitHub main is no longer the commit"
-                            echo "that Jenkins tested."
+                            echo "GitHub main no longer points to the"
+                            echo "commit Jenkins tested."
 
                             echo ""
-                            echo "GitHub rollback will NOT continue."
+                            echo "GitHub rollback cancelled for safety."
 
                             exit 1
                         fi
 
 
                         /*
-                         * Configure Jenkins Git identity.
+                         * Configure Git identity.
                          */
 
                         git config user.name "Jenkins"
@@ -696,15 +700,22 @@ Reverting failed commit:
 
 
                         /*
-                         * Create revert commit.
+                         * ==================================
+                         * REVERT NORMAL COMMIT
+                         * ==================================
+                         *
+                         * DO NOT use:
+                         *
+                         * git revert -m 1
+                         *
+                         * for normal commits.
                          */
 
                         echo ""
-                        echo "Creating GitHub rollback commit..."
+                        echo "Creating GitHub rollback..."
 
                         git revert \
                             --no-edit \
-                            -m 1 \
                             "${CURRENT_COMMIT}"
 
                         REVERT_STATUS=$?
@@ -724,9 +735,9 @@ Reverting failed commit:
 
 
                         /*
-                         * Change commit message so the next
-                         * webhook can identify it as an
-                         * automatic rollback.
+                         * Give the rollback commit a recognizable
+                         * message so Jenkins can detect it when
+                         * the GitHub webhook fires.
                          */
 
                         git commit \
@@ -739,14 +750,17 @@ Reverting failed commit:
                         if [ "${AMEND_STATUS}" -ne 0 ]; then
 
                             echo ""
-                            echo "Could not create rollback commit."
+                            echo "========================================"
+                            echo "ROLLBACK COMMIT FAILED"
+                            echo "========================================"
 
                             exit 1
                         fi
 
 
                         echo ""
-                        echo "Rollback commit:"
+                        echo "Rollback commit created:"
+
                         git log -1 --oneline
 
 
@@ -796,7 +810,7 @@ Reverting failed commit:
 
             echo '''
 ========================================
-JENKINS PIPELINE FINISHED
+JENKINS BUILD FINISHED
 ========================================
 '''
         }
