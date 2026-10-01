@@ -31,10 +31,13 @@ pipeline {
         PHP_CHECK_PASSED = "false"
 
         SKIP_PIPELINE = "false"
+
+        CURRENT_COMMIT = ""
     }
 
 
     stages {
+
 
         /*
          * ==================================================
@@ -52,6 +55,14 @@ pipeline {
                     credentialsId: 'github-pat'
                 )
 
+                script {
+
+                    env.CURRENT_COMMIT = sh(
+                        script: 'git rev-parse HEAD',
+                        returnStdout: true
+                    ).trim()
+                }
+
                 sh '''
                     set -e
 
@@ -68,6 +79,14 @@ pipeline {
                     git log -1 --pretty=%B
 
                     echo ""
+                    echo "Repository files:"
+                    find . \
+                        -type f \
+                        -not -path './.git/*' \
+                        -not -path './Jenkinsfile' \
+                        | sort
+
+                    echo ""
                     echo "Checkout completed."
                 '''
             }
@@ -76,22 +95,11 @@ pipeline {
 
         /*
          * ==================================================
-         * 2. PHP SYNTAX CHECK - FIRST REAL TEST
+         * 2. SHOW ALL FILES IN THIS PUSH
          * ==================================================
-         *
-         * IMPORTANT:
-         *
-         * If PHP syntax fails:
-         *
-         * 1. Jenkins build fails.
-         * 2. Deployment does NOT happen.
-         * 3. /var/www/html is NOT changed.
-         * 4. Jenkins does NOT push anything to GitHub.
-         * 5. The bad commit remains in GitHub until you fix it.
-         *
          */
 
-        stage('CHECK PHP SYNTAX FIRST') {
+        stage('Check Pushed Files') {
 
             steps {
 
@@ -99,13 +107,66 @@ pipeline {
                     set -e
 
                     echo "========================================"
-                    echo "CHECKING PHP SYNTAX"
+                    echo "FILES IN PUSHED COMMIT"
+                    echo "========================================"
+
+                    echo ""
+                    echo "Commit:"
+                    git rev-parse HEAD
+
+                    echo ""
+                    echo "Changed files:"
+                    echo "----------------------------------------"
+
+                    git diff-tree \
+                        --no-commit-id \
+                        --name-status \
+                        -r \
+                        HEAD
+
+                    echo ""
+                    echo "All repository files:"
+                    echo "----------------------------------------"
+
+                    find . \
+                        -type f \
+                        -not -path './.git/*' \
+                        | sort
+
+                    echo ""
+                    echo "File check completed."
+                '''
+            }
+        }
+
+
+        /*
+         * ==================================================
+         * 3. TEST EVERY PHP FILE
+         * ==================================================
+         *
+         * This checks ALL PHP files in the repository.
+         *
+         * It does NOT only check index.php.
+         *
+         */
+
+        stage('CHECK ALL PHP FILES') {
+
+            steps {
+
+                sh '''
+                    set -e
+
+                    echo "========================================"
+                    echo "CHECKING ALL PHP FILES"
                     echo "========================================"
 
                     PHP_COUNT=$(find "${WORKSPACE}" \
                         -type f \
                         -name "*.php" \
                         -not -path "${WORKSPACE}/vendor/*" \
+                        -not -path "${WORKSPACE}/.git/*" \
                         -not -path "${WORKSPACE}@tmp/*" \
                         | wc -l)
 
@@ -120,26 +181,80 @@ pipeline {
                     else
 
                         echo ""
-                        echo "Running PHP syntax checks..."
-                        echo ""
+                        echo "PHP files to test:"
+                        echo "----------------------------------------"
 
                         find "${WORKSPACE}" \
                             -type f \
                             -name "*.php" \
                             -not -path "${WORKSPACE}/vendor/*" \
+                            -not -path "${WORKSPACE}/.git/*" \
                             -not -path "${WORKSPACE}@tmp/*" \
-                            -print0 |
-                        xargs -0 -n1 php -l
+                            | sort
+
+                        echo ""
+                        echo "Running PHP syntax checks..."
+                        echo "----------------------------------------"
+
+                        PHP_FAILED=0
+
+                        while IFS= read -r -d '' PHP_FILE
+                        do
+
+                            echo ""
+                            echo "Testing:"
+                            echo "${PHP_FILE}"
+
+                            if php -l "${PHP_FILE}"; then
+
+                                echo "PASS: ${PHP_FILE}"
+
+                            else
+
+                                echo "FAIL: ${PHP_FILE}"
+
+                                PHP_FAILED=1
+
+                            fi
+
+                        done < <(
+                            find "${WORKSPACE}" \
+                                -type f \
+                                -name "*.php" \
+                                -not -path "${WORKSPACE}/vendor/*" \
+                                -not -path "${WORKSPACE}/.git/*" \
+                                -not -path "${WORKSPACE}@tmp/*" \
+                                -print0
+                        )
+
+                        echo ""
+
+                        if [ "${PHP_FAILED}" -ne 0 ]; then
+
+                            echo "========================================"
+                            echo "PHP SYNTAX TEST FAILED"
+                            echo "========================================"
+
+                            echo ""
+                            echo "One or more PHP files contain errors."
+                            echo ""
+                            echo "DEPLOYMENT WILL NOT START."
+                            echo "THE WEBSITE WILL NOT BE CHANGED."
+                            echo "GITHUB WILL NOT BE MODIFIED."
+
+                            exit 1
+                        fi
 
                     fi
 
                     echo ""
                     echo "========================================"
-                    echo "PHP SYNTAX PASSED"
+                    echo "ALL PHP FILES PASSED"
                     echo "========================================"
                 '''
 
                 script {
+
                     env.PHP_CHECK_PASSED = "true"
                 }
             }
@@ -148,7 +263,7 @@ pipeline {
 
         /*
          * ==================================================
-         * 3. CHECK SELENIUM ENVIRONMENT
+         * 4. CHECK PYTHON / SELENIUM ENVIRONMENT
          * ==================================================
          */
 
@@ -193,7 +308,7 @@ pipeline {
 
         /*
          * ==================================================
-         * 4. BACKUP CURRENT WEBSITE
+         * 5. BACKUP CURRENT WEBSITE
          * ==================================================
          */
 
@@ -232,9 +347,7 @@ pipeline {
                         "${BACKUP_CURRENT}"
 
                     echo ""
-                    echo "========================================"
-                    echo "WEBSITE BACKUP COMPLETED"
-                    echo "========================================"
+                    echo "Website backup completed."
                 '''
             }
         }
@@ -242,11 +355,29 @@ pipeline {
 
         /*
          * ==================================================
-         * 5. DEPLOY
+         * 6. DEPLOY ENTIRE REPOSITORY
          * ==================================================
+         *
+         * IMPORTANT:
+         *
+         * This deploys ALL files.
+         *
+         * Examples:
+         *
+         * index.php
+         * login.php
+         * register.php
+         * css/style.css
+         * js/app.js
+         * images/*
+         * pages/*
+         * etc.
+         *
+         * Only Jenkins-specific files are excluded.
+         *
          */
 
-        stage('Deploy') {
+        stage('Deploy ALL Repository Files') {
 
             when {
 
@@ -259,14 +390,6 @@ pipeline {
 
                 script {
 
-                    /*
-                     * Mark deployment BEFORE rsync.
-                     *
-                     * If rsync partially changes the website
-                     * and then fails, the post-failure rollback
-                     * will restore the backup.
-                     */
-
                     env.DEPLOYED = "true"
                 }
 
@@ -274,19 +397,54 @@ pipeline {
                     set -e
 
                     echo "========================================"
-                    echo "DEPLOYING WEBSITE"
+                    echo "DEPLOYING ALL REPOSITORY FILES"
                     echo "========================================"
 
-                    sudo rsync -a \
+                    echo ""
+                    echo "Source:"
+                    echo "${WORKSPACE}/"
+
+                    echo ""
+                    echo "Destination:"
+                    echo "${WEB_DIR}/"
+
+                    echo ""
+                    echo "Files being deployed:"
+                    echo "----------------------------------------"
+
+                    find "${WORKSPACE}" \
+                        -type f \
+                        -not -path "${WORKSPACE}/.git/*" \
+                        -not -path "${WORKSPACE}/Jenkinsfile" \
+                        -not -path "${WORKSPACE}/tests/*" \
+                        -not -path "${WORKSPACE}/vendor/*" \
+                        | sort
+
+                    echo ""
+                    echo "Starting rsync..."
+                    echo "----------------------------------------"
+
+                    sudo rsync -av \
                         --delete \
                         --exclude=".git" \
                         --exclude="Jenkinsfile" \
-                        --exclude="tests" \
+                        --exclude="tests/" \
+                        --exclude="vendor/" \
                         "${WORKSPACE}/" \
                         "${WEB_DIR}/"
 
                     echo ""
-                    echo "DEPLOYMENT COMPLETED"
+                    echo "========================================"
+                    echo "ALL FILES DEPLOYED"
+                    echo "========================================"
+
+                    echo ""
+                    echo "Server files:"
+                    echo "----------------------------------------"
+
+                    sudo find "${WEB_DIR}" \
+                        -type f \
+                        | sort
                 '''
             }
         }
@@ -294,7 +452,80 @@ pipeline {
 
         /*
          * ==================================================
-         * 6. HTTP TEST
+         * 7. VERIFY DEPLOYED PHP FILES
+         * ==================================================
+         *
+         * This checks PHP again AFTER copying it
+         * to the server.
+         *
+         */
+
+        stage('Verify Server PHP Files') {
+
+            when {
+
+                expression {
+                    env.DEPLOYED == "true"
+                }
+            }
+
+            steps {
+
+                sh '''
+                    set -e
+
+                    echo "========================================"
+                    echo "VERIFYING SERVER PHP FILES"
+                    echo "========================================"
+
+                    PHP_FAILED=0
+
+                    while IFS= read -r -d '' PHP_FILE
+                    do
+
+                        echo ""
+                        echo "Testing server file:"
+                        echo "${PHP_FILE}"
+
+                        if php -l "${PHP_FILE}"; then
+
+                            echo "PASS"
+
+                        else
+
+                            echo "FAIL"
+
+                            PHP_FAILED=1
+
+                        fi
+
+                    done < <(
+                        sudo find "${WEB_DIR}" \
+                            -type f \
+                            -name "*.php" \
+                            -print0
+                    )
+
+                    if [ "${PHP_FAILED}" -ne 0 ]; then
+
+                        echo ""
+                        echo "SERVER PHP VERIFICATION FAILED."
+
+                        exit 1
+                    fi
+
+                    echo ""
+                    echo "========================================"
+                    echo "SERVER PHP FILES PASSED"
+                    echo "========================================"
+                '''
+            }
+        }
+
+
+        /*
+         * ==================================================
+         * 8. HTTP TEST
          * ==================================================
          */
 
@@ -303,7 +534,7 @@ pipeline {
             when {
 
                 expression {
-                    env.PHP_CHECK_PASSED == "true"
+                    env.DEPLOYED == "true"
                 }
             }
 
@@ -338,7 +569,7 @@ pipeline {
                     fi
 
                     echo ""
-                    echo "HTTP TEST PASSED"
+                    echo "HTTP TEST PASSED."
                 '''
             }
         }
@@ -346,7 +577,7 @@ pipeline {
 
         /*
          * ==================================================
-         * 7. SELENIUM TEST
+         * 9. SELENIUM TEST
          * ==================================================
          */
 
@@ -355,7 +586,7 @@ pipeline {
             when {
 
                 expression {
-                    env.PHP_CHECK_PASSED == "true"
+                    env.DEPLOYED == "true"
                 }
             }
 
@@ -375,52 +606,6 @@ pipeline {
                     echo "========================================"
                     echo "SELENIUM TEST PASSED"
                     echo "========================================"
-                '''
-            }
-        }
-
-
-        /*
-         * ==================================================
-         * 8. SUCCESS
-         * ==================================================
-         *
-         * At this point:
-         *
-         * PHP       = PASS
-         * HTTP      = PASS
-         * Selenium  = PASS
-         *
-         * Therefore the commit is safe to deploy.
-         */
-
-        stage('Deployment Verified') {
-
-            when {
-
-                expression {
-                    env.PHP_CHECK_PASSED == "true"
-                }
-            }
-
-            steps {
-
-                sh '''
-                    echo "========================================"
-                    echo "DEPLOYMENT VERIFIED"
-                    echo "========================================"
-
-                    echo ""
-                    echo "PHP syntax: PASS"
-                    echo "HTTP test:  PASS"
-                    echo "Selenium:   PASS"
-
-                    echo ""
-                    echo "Current Git commit:"
-                    git rev-parse HEAD
-
-                    echo ""
-                    echo "Version is valid."
                 '''
             }
         }
@@ -449,11 +634,13 @@ pipeline {
 DEPLOYMENT SUCCESSFUL
 ========================================
 
-PHP syntax: PASS
-HTTP test:  PASS
-Selenium:   PASS
+ALL PHP FILES:       PASS
+SERVER PHP FILES:    PASS
+HTTP TEST:           PASS
+SELENIUM TEST:       PASS
 
-The tested GitHub commit is now deployed.
+ALL REPOSITORY FILES WERE DEPLOYED.
+
 ========================================
 '''
         }
@@ -470,19 +657,19 @@ The tested GitHub commit is now deployed.
             script {
 
                 /*
-                 * ==================================================
-                 * CASE 1:
-                 * PHP SYNTAX FAILED
-                 * ==================================================
+                 * ==========================================
+                 * PHP FAILED
+                 * ==========================================
                  *
-                 * THIS IS THE IMPORTANT PART.
+                 * IMPORTANT:
                  *
-                 * Do NOT rollback GitHub.
-                 * Do NOT push anything.
-                 * Do NOT modify the repository.
+                 * PHP failed BEFORE deployment.
                  *
-                 * The bad commit stays on GitHub so you can
-                 * correct it and push a new commit.
+                 * Therefore:
+                 *
+                 * - Do NOT rollback website.
+                 * - Do NOT push to GitHub.
+                 * - Do NOT change GitHub.
                  *
                  */
 
@@ -490,19 +677,22 @@ The tested GitHub commit is now deployed.
 
                     echo '''
 ========================================
-PHP SYNTAX CHECK FAILED
+PHP SYNTAX ERROR
 ========================================
 
 DEPLOYMENT CANCELLED.
 
-The website was NOT changed.
+The PHP validation failed.
 
-GitHub was NOT changed.
+Website:
+NOT CHANGED
 
-Jenkins will NOT create a rollback commit.
+GitHub:
+NOT CHANGED
 
-Fix the PHP error in GitHub and push
-a new commit.
+No rollback commit will be created.
+
+Fix the PHP file and push a new commit.
 
 ========================================
 '''
@@ -510,94 +700,73 @@ a new commit.
 
 
                 /*
-                 * ==================================================
-                 * CASE 2:
-                 * PHP PASSED BUT DEPLOYMENT/TEST FAILED
-                 * ==================================================
+                 * ==========================================
+                 * DEPLOYMENT STARTED
+                 * ==========================================
                  *
-                 * In this case deployment may have changed the
-                 * website, so restore the previous website backup.
+                 * A later test failed.
                  *
-                 * GitHub is STILL NOT modified.
+                 * Restore the previous website.
                  *
                  */
 
-                else {
+                else if (env.DEPLOYED == "true") {
 
-                    if (env.DEPLOYED == "true") {
-
-                        echo '''
+                    echo '''
 ========================================
 DEPLOYMENT / TEST FAILED
 ========================================
-
-PHP syntax passed, but a later stage failed.
 
 Restoring previous website version...
 ========================================
 '''
 
-                        sh '''
-                            set +e
+                    sh '''
+                        set +e
 
-                            if [ -d "${BACKUP_CURRENT}" ]; then
+                        if [ -d "${BACKUP_CURRENT}" ]; then
 
-                                echo "Restoring website backup..."
+                            echo "Restoring backup..."
 
-                                sudo rsync -a \
-                                    --delete \
-                                    "${BACKUP_CURRENT}/" \
-                                    "${WEB_DIR}/"
+                            sudo rsync -a \
+                                --delete \
+                                "${BACKUP_CURRENT}/" \
+                                "${WEB_DIR}/"
 
-                                STATUS=$?
+                            STATUS=$?
 
-                                if [ "${STATUS}" -eq 0 ]; then
+                            if [ "${STATUS}" -eq 0 ]; then
 
-                                    echo ""
-                                    echo "========================================"
-                                    echo "WEBSITE ROLLBACK SUCCESSFUL"
-                                    echo "========================================"
-
-                                else
-
-                                    echo ""
-                                    echo "========================================"
-                                    echo "WEBSITE ROLLBACK FAILED"
-                                    echo "========================================"
-
-                                fi
+                                echo ""
+                                echo "========================================"
+                                echo "WEBSITE ROLLBACK SUCCESSFUL"
+                                echo "========================================"
 
                             else
 
                                 echo ""
-                                echo "NO WEBSITE BACKUP FOUND."
+                                echo "========================================"
+                                echo "WEBSITE ROLLBACK FAILED"
+                                echo "========================================"
 
                             fi
-                        '''
 
-                    }
+                        else
 
-                    else {
+                            echo ""
+                            echo "NO WEBSITE BACKUP FOUND."
 
-                        echo '''
-========================================
-NO DEPLOYMENT WAS PERFORMED
-========================================
-'''
-                    }
-
+                        fi
+                    '''
 
                     echo '''
 ========================================
 GITHUB WAS NOT MODIFIED
 ========================================
 
-Jenkins does not automatically push a
-rollback commit to GitHub.
+The GitHub repository remains unchanged.
 
-The repository remains at the commit
-that triggered this build.
-
+Fix the failing test and push a new commit.
 ========================================
 '''
                 }
