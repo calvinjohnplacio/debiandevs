@@ -21,6 +21,8 @@ pipeline {
         BACKUP_DIR = "/var/backups/myapp"
 
         PYTHON = "/opt/selenium-venv/bin/python"
+
+        DEPLOYED = "false"
     }
 
 
@@ -42,42 +44,18 @@ pipeline {
                     echo "CHECKOUT"
                     echo "================================"
 
+                    echo "Commit:"
                     git rev-parse HEAD
+
+                    echo ""
+                    echo "Files:"
+                    find . -maxdepth 2 -type f | sort
                 '''
             }
         }
 
 
-       stage('Check PHP Syntax') {
-
-    steps {
-
-        sh '''
-            set -e
-
-            echo "================================"
-            echo "CHECKING ALL PHP FILES"
-            echo "================================"
-
-            find "${WORKSPACE}" \
-                -type f \
-                -name "*.php" \
-                -not -path "${WORKSPACE}/vendor/*" \
-                -not -path "${WORKSPACE}@tmp/*" \
-                -print0 |
-            xargs -0 -n1 php -l
-
-            echo ""
-            echo "================================"
-            echo "ALL PHP FILES PASSED"
-            echo "================================"
-        '''
-    }
-}
-
-
-
-        stage('Check Python Selenium') {
+        stage('Check PHP Syntax') {
 
             steps {
 
@@ -85,15 +63,70 @@ pipeline {
                     set -e
 
                     echo "================================"
-                    echo "CHECKING SELENIUM"
+                    echo "CHECKING ALL PHP FILES"
                     echo "================================"
 
+                    PHP_COUNT=$(find "${WORKSPACE}" \
+                        -type f \
+                        -name "*.php" \
+                        -not -path "${WORKSPACE}/vendor/*" \
+                        -not -path "${WORKSPACE}@tmp/*" \
+                        | wc -l)
+
+                    echo "PHP files found: ${PHP_COUNT}"
+
+                    if [ "${PHP_COUNT}" -eq 0 ]; then
+
+                        echo "No PHP files found."
+
+                    else
+
+                        find "${WORKSPACE}" \
+                            -type f \
+                            -name "*.php" \
+                            -not -path "${WORKSPACE}/vendor/*" \
+                            -not -path "${WORKSPACE}@tmp/*" \
+                            -print0 |
+                        xargs -0 -n1 php -l
+
+                    fi
+
+                    echo ""
+                    echo "================================"
+                    echo "ALL PHP FILES PASSED"
+                    echo "================================"
+                '''
+            }
+        }
+
+
+        stage('Check Selenium Environment') {
+
+            steps {
+
+                sh '''
+                    set -e
+
+                    echo "================================"
+                    echo "CHECKING SELENIUM ENVIRONMENT"
+                    echo "================================"
+
+                    echo "Python:"
                     ${PYTHON} --version
 
-                    ${PYTHON} -c \
-                        "import selenium; print('Selenium:', selenium.__version__)"
+                    echo ""
+                    echo "Selenium:"
 
-                    echo "Selenium is ready."
+                    ${PYTHON} -c \
+                        "import selenium; print(selenium.__version__)"
+
+                    echo ""
+                    echo "Chrome/Chromium:"
+
+                    chromium --version
+
+                    echo ""
+                    echo "Selenium environment OK."
                 '''
             }
         }
@@ -107,7 +140,7 @@ pipeline {
                     set -e
 
                     echo "================================"
-                    echo "BACKUP"
+                    echo "BACKING UP CURRENT WEBSITE"
                     echo "================================"
 
                     sudo mkdir -p "${BACKUP_DIR}"
@@ -122,7 +155,17 @@ pipeline {
                         "${WEB_DIR}/" \
                         "${BACKUP_DIR}/current/"
 
+                    echo ""
                     echo "Backup completed."
+
+                    echo ""
+                    echo "Backup contents:"
+
+                    sudo find \
+                        "${BACKUP_DIR}/current" \
+                        -maxdepth 2 \
+                        -type f \
+                        | head -50
                 '''
             }
         }
@@ -136,7 +179,7 @@ pipeline {
                     set -e
 
                     echo "================================"
-                    echo "DEPLOYING"
+                    echo "DEPLOYING TO /var/www/html"
                     echo "================================"
 
                     sudo rsync -a \
@@ -147,8 +190,13 @@ pipeline {
                         "${WORKSPACE}/" \
                         "${WEB_DIR}/"
 
+                    echo ""
                     echo "Deployment completed."
                 '''
+
+                script {
+                    env.DEPLOYED = "true"
+                }
             }
         }
 
@@ -166,14 +214,24 @@ pipeline {
 
                     sleep 2
 
-                    curl \
-                        --fail \
+                    HTTP_CODE=$(curl \
+                        --output /dev/null \
                         --silent \
                         --show-error \
-                        http://127.0.0.1/
+                        --write-out "%{http_code}" \
+                        http://127.0.0.1/)
+
+                    echo "HTTP status: ${HTTP_CODE}"
+
+                    if [ "${HTTP_CODE}" -lt 200 ] || [ "${HTTP_CODE}" -ge 400 ]; then
+
+                        echo "HTTP TEST FAILED."
+
+                        exit 1
+
+                    fi
 
                     echo ""
-
                     echo "HTTP TEST PASSED."
                 '''
             }
@@ -195,7 +253,9 @@ pipeline {
                         "${WORKSPACE}/tests/selenium_test.py"
 
                     echo ""
-                    echo "SELENIUM TEST PASSED."
+                    echo "================================"
+                    echo "SELENIUM TEST PASSED"
+                    echo "================================"
                 '''
             }
         }
@@ -212,43 +272,67 @@ pipeline {
 DEPLOYMENT SUCCESSFUL
 ========================================
 '''
+
+            sh '''
+                echo "Current website:"
+                ls -la "${WEB_DIR}"
+
+                echo ""
+                echo "Deployment completed successfully."
+            '''
         }
 
 
         failure {
 
-            echo '''
+            script {
+
+                if (env.DEPLOYED == "true") {
+
+                    echo '''
 ========================================
-PIPELINE FAILED
+DEPLOYMENT FAILED
 ROLLING BACK
 ========================================
 '''
 
-            sh '''
-                set +e
+                    sh '''
+                        set +e
 
-                if [ -d "${BACKUP_DIR}/current" ]; then
+                        if [ -d "${BACKUP_DIR}/current" ]; then
 
-                    echo "Restoring previous website..."
+                            echo "Restoring previous website..."
 
-                    sudo rsync -a \
-                        --delete \
-                        "${BACKUP_DIR}/current/" \
-                        "${WEB_DIR}/"
+                            sudo rsync -a \
+                                --delete \
+                                "${BACKUP_DIR}/current/" \
+                                "${WEB_DIR}/"
 
-                    echo ""
-                    echo "================================"
-                    echo "ROLLBACK COMPLETED"
-                    echo "================================"
+                            echo ""
+                            echo "================================"
+                            echo "ROLLBACK COMPLETED"
+                            echo "================================"
 
-                else
+                        else
 
-                    echo "================================"
-                    echo "NO BACKUP AVAILABLE"
-                    echo "================================"
+                            echo ""
+                            echo "================================"
+                            echo "NO BACKUP AVAILABLE"
+                            echo "================================"
 
-                fi
-            '''
+                        fi
+                    '''
+
+                } else {
+
+                    echo '''
+========================================
+BUILD FAILED BEFORE DEPLOYMENT
+NO ROLLBACK REQUIRED
+========================================
+'''
+                }
+            }
         }
 
 
