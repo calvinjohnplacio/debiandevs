@@ -8,7 +8,7 @@ echo '<head>';
 echo '<title>Losfdgins to</title>';
 echo '</head>';
 
-echo '<body style="background-color:yellow ">';
+echo '<body style="background-color:yellow">';
 
 echo '<h1 id="login-title">';
 echo 'Login Page';
