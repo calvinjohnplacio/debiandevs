@@ -69,7 +69,7 @@ No deployment. No second rollback.
             }
         }
 
-        stage('Check All PHP Syntax') {
+       stage('Check All PHP Syntax') {
             when {
                 expression { env.SKIP_PIPELINE != "true" }
             }
