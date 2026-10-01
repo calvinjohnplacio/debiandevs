@@ -29,6 +29,12 @@ pipeline {
     stages {
 
 
+        /*
+         * ==========================================
+         * CHECKOUT FROM GITHUB
+         * ==========================================
+         */
+
         stage('Checkout') {
 
             steps {
@@ -44,8 +50,12 @@ pipeline {
                     echo "CHECKOUT"
                     echo "================================"
 
-                    echo "Commit:"
+                    echo "Git commit:"
                     git rev-parse HEAD
+
+                    echo ""
+                    echo "Git branch:"
+                    git branch --show-current
 
                     echo ""
                     echo "Files:"
@@ -54,6 +64,22 @@ pipeline {
             }
         }
 
+
+        /*
+         * ==========================================
+         * CHECK ALL PHP FILES
+         * ==========================================
+         *
+         * IMPORTANT:
+         *
+         * This happens BEFORE backup and deployment.
+         *
+         * If PHP has a syntax error:
+         *
+         * Jenkins stops.
+         * /var/www/html is NOT changed.
+         *
+         */
 
         stage('Check PHP Syntax') {
 
@@ -73,13 +99,19 @@ pipeline {
                         -not -path "${WORKSPACE}@tmp/*" \
                         | wc -l)
 
+                    echo ""
                     echo "PHP files found: ${PHP_COUNT}"
 
                     if [ "${PHP_COUNT}" -eq 0 ]; then
 
+                        echo ""
                         echo "No PHP files found."
 
                     else
+
+                        echo ""
+                        echo "Running PHP syntax checks..."
+                        echo ""
 
                         find "${WORKSPACE}" \
                             -type f \
@@ -100,6 +132,12 @@ pipeline {
         }
 
 
+        /*
+         * ==========================================
+         * CHECK PYTHON + SELENIUM + CHROMIUM
+         * ==========================================
+         */
+
         stage('Check Selenium Environment') {
 
             steps {
@@ -111,18 +149,17 @@ pipeline {
                     echo "CHECKING SELENIUM ENVIRONMENT"
                     echo "================================"
 
+                    echo ""
                     echo "Python:"
                     ${PYTHON} --version
 
                     echo ""
                     echo "Selenium:"
-
                     ${PYTHON} -c \
                         "import selenium; print(selenium.__version__)"
 
                     echo ""
-                    echo "Chrome/Chromium:"
-
+                    echo "Chromium:"
                     chromium --version
 
                     echo ""
@@ -131,6 +168,12 @@ pipeline {
             }
         }
 
+
+        /*
+         * ==========================================
+         * BACKUP CURRENT PRODUCTION WEBSITE
+         * ==========================================
+         */
 
         stage('Backup Current Website') {
 
@@ -145,42 +188,76 @@ pipeline {
 
                     sudo mkdir -p "${BACKUP_DIR}"
 
+                    echo ""
+                    echo "Removing old backup..."
+
                     sudo rm -rf \
                         "${BACKUP_DIR}/current"
 
+                    echo ""
+                    echo "Creating new backup directory..."
+
                     sudo mkdir -p \
                         "${BACKUP_DIR}/current"
+
+                    echo ""
+                    echo "Copying:"
+                    echo "${WEB_DIR}"
+                    echo ""
+                    echo "To:"
+                    echo "${BACKUP_DIR}/current"
 
                     sudo rsync -a \
                         "${WEB_DIR}/" \
                         "${BACKUP_DIR}/current/"
 
                     echo ""
-                    echo "Backup completed."
-
-                    echo ""
-                    echo "Backup contents:"
-
-                    sudo find \
-                        "${BACKUP_DIR}/current" \
-                        -maxdepth 2 \
-                        -type f \
-                        | head -50
+                    echo "================================"
+                    echo "BACKUP COMPLETED"
+                    echo "================================"
                 '''
             }
         }
 
 
+        /*
+         * ==========================================
+         * DEPLOY
+         * ==========================================
+         *
+         * DEPLOYED=true is set BEFORE rsync.
+         *
+         * This means if rsync partially changes
+         * /var/www/html and then fails, Jenkins
+         * will still attempt rollback.
+         *
+         */
+
         stage('Deploy to /var/www/html') {
 
             steps {
+
+                script {
+
+                    env.DEPLOYED = "true"
+                }
 
                 sh '''
                     set -e
 
                     echo "================================"
-                    echo "DEPLOYING TO /var/www/html"
+                    echo "DEPLOYING"
                     echo "================================"
+
+                    echo ""
+                    echo "Source:"
+                    echo "${WORKSPACE}/"
+
+                    echo ""
+                    echo "Destination:"
+                    echo "${WEB_DIR}"
+
+                    echo ""
 
                     sudo rsync -a \
                         --delete \
@@ -191,15 +268,19 @@ pipeline {
                         "${WEB_DIR}/"
 
                     echo ""
-                    echo "Deployment completed."
+                    echo "================================"
+                    echo "DEPLOYMENT COMPLETED"
+                    echo "================================"
                 '''
-
-                script {
-                    env.DEPLOYED = "true"
-                }
             }
         }
 
+
+        /*
+         * ==========================================
+         * BASIC HTTP TEST
+         * ==========================================
+         */
 
         stage('HTTP Test') {
 
@@ -221,10 +302,12 @@ pipeline {
                         --write-out "%{http_code}" \
                         http://127.0.0.1/)
 
+                    echo ""
                     echo "HTTP status: ${HTTP_CODE}"
 
                     if [ "${HTTP_CODE}" -lt 200 ] || [ "${HTTP_CODE}" -ge 400 ]; then
 
+                        echo ""
                         echo "HTTP TEST FAILED."
 
                         exit 1
@@ -232,11 +315,19 @@ pipeline {
                     fi
 
                     echo ""
-                    echo "HTTP TEST PASSED."
+                    echo "================================"
+                    echo "HTTP TEST PASSED"
+                    echo "================================"
                 '''
             }
         }
 
+
+        /*
+         * ==========================================
+         * SELENIUM TEST
+         * ==========================================
+         */
 
         stage('Python Selenium Test') {
 
@@ -262,8 +353,20 @@ pipeline {
     }
 
 
+    /*
+     * ==========================================
+     * POST ACTIONS
+     * ==========================================
+     */
+
     post {
 
+
+        /*
+         * ========================================
+         * SUCCESS
+         * ========================================
+         */
 
         success {
 
@@ -274,14 +377,27 @@ DEPLOYMENT SUCCESSFUL
 '''
 
             sh '''
+                echo ""
                 echo "Current website:"
+                echo "================"
+
                 ls -la "${WEB_DIR}"
 
                 echo ""
-                echo "Deployment completed successfully."
+                echo "Website deployed successfully."
+
+                echo ""
+                echo "Backup available at:"
+                echo "${BACKUP_DIR}/current"
             '''
         }
 
+
+        /*
+         * ========================================
+         * FAILURE
+         * ========================================
+         */
 
         failure {
 
@@ -292,33 +408,62 @@ DEPLOYMENT SUCCESSFUL
                     echo '''
 ========================================
 DEPLOYMENT FAILED
-ROLLING BACK
+========================================
+ROLLING BACK TO PREVIOUS VERSION
 ========================================
 '''
 
                     sh '''
                         set +e
 
+                        echo ""
+                        echo "Checking backup..."
+
                         if [ -d "${BACKUP_DIR}/current" ]; then
 
-                            echo "Restoring previous website..."
+                            echo ""
+                            echo "Backup found."
+
+                            echo ""
+                            echo "Restoring:"
+                            echo "${BACKUP_DIR}/current/"
+
+                            echo ""
+                            echo "To:"
+                            echo "${WEB_DIR}/"
 
                             sudo rsync -a \
                                 --delete \
                                 "${BACKUP_DIR}/current/" \
                                 "${WEB_DIR}/"
 
+                            ROLLBACK_STATUS=$?
+
                             echo ""
-                            echo "================================"
-                            echo "ROLLBACK COMPLETED"
-                            echo "================================"
+
+                            if [ "${ROLLBACK_STATUS}" -eq 0 ]; then
+
+                                echo "================================"
+                                echo "ROLLBACK COMPLETED"
+                                echo "================================"
+
+                            else
+
+                                echo "================================"
+                                echo "ROLLBACK FAILED"
+                                echo "================================"
+
+                                exit 1
+
+                            fi
 
                         else
 
-                            echo ""
                             echo "================================"
                             echo "NO BACKUP AVAILABLE"
                             echo "================================"
+
+                            exit 1
 
                         fi
                     '''
@@ -328,13 +473,22 @@ ROLLING BACK
                     echo '''
 ========================================
 BUILD FAILED BEFORE DEPLOYMENT
+========================================
 NO ROLLBACK REQUIRED
 ========================================
+
+The existing website was not changed.
 '''
                 }
             }
         }
 
+
+        /*
+         * ========================================
+         * ALWAYS
+         * ========================================
+         */
 
         always {
 
