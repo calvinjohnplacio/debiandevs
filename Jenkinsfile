@@ -20,6 +20,7 @@ pipeline {
     }
 
     stages {
+
         stage('Checkout') {
             steps {
                 git(
@@ -37,13 +38,18 @@ pipeline {
 
                 sh '''
                     set -e
+
                     echo "========================================"
                     echo "CHECKOUT"
                     echo "========================================"
                     echo "Commit: $(git rev-parse HEAD)"
                     echo "Commit message: $(git log -1 --pretty=%B)"
                     echo "Repository files:"
-                    find . -type f -not -path './.git/*' | sort
+
+                    find . \
+                        -type f \
+                        -not -path './.git/*' \
+                        | sort
                 '''
             }
         }
@@ -71,16 +77,21 @@ No deployment. No second rollback.
 
         stage('Check All PHP Syntax') {
             when {
-                expression { env.SKIP_PIPELINE != "true" }
+                expression {
+                    env.SKIP_PIPELINE != "true"
+                }
             }
+
             steps {
                 sh '''
                     set -e
+
                     echo "========================================"
                     echo "CHECKING ALL PHP FILES"
                     echo "========================================"
 
                     PHP_LIST="${WORKSPACE}/php_files.txt"
+
                     rm -f "${PHP_LIST}"
 
                     find "${WORKSPACE}" \
@@ -91,15 +102,18 @@ No deployment. No second rollback.
                         -not -path "${WORKSPACE}@tmp/*" \
                         -print > "${PHP_LIST}"
 
-                    PHP_COUNT=\((wc -l < "\){PHP_LIST}")
+                    PHP_COUNT=$(wc -l < "${PHP_LIST}")
+
                     echo "PHP files found: ${PHP_COUNT}"
 
                     if [ "${PHP_COUNT}" -eq 0 ]; then
                         echo "No PHP files found."
                     else
                         PHP_FAILED=0
+
                         while IFS= read -r PHP_FILE; do
                             echo "Checking: ${PHP_FILE}"
+
                             if php -l "${PHP_FILE}"; then
                                 echo "PASS: ${PHP_FILE}"
                             else
@@ -126,17 +140,26 @@ No deployment. No second rollback.
 
         stage('Check Selenium Environment') {
             when {
-                expression { env.SKIP_PIPELINE != "true" }
+                expression {
+                    env.SKIP_PIPELINE != "true"
+                }
             }
+
             steps {
                 sh '''
                     set -e
+
                     echo "========================================"
                     echo "CHECKING SELENIUM ENVIRONMENT"
                     echo "========================================"
-                    ${PYTHON} --version
-                    ${PYTHON} -c "import selenium; print('Selenium:', selenium.__version__)"
+
+                    "${PYTHON}" --version
+
+                    "${PYTHON}" -c \
+                        "import selenium; print('Selenium:', selenium.__version__)"
+
                     chromium --version
+
                     echo "SELENIUM ENVIRONMENT OK"
                 '''
             }
@@ -144,19 +167,35 @@ No deployment. No second rollback.
 
         stage('Backup Current Website') {
             when {
-                expression { env.SKIP_PIPELINE != "true" }
+                expression {
+                    env.SKIP_PIPELINE != "true"
+                }
             }
+
             steps {
                 sh '''
                     set -e
+
                     echo "========================================"
                     echo "BACKING UP CURRENT WEBSITE"
                     echo "========================================"
+
                     sudo mkdir -p "${BACKUP_DIR}/new"
-                    sudo rm -rf "${BACKUP_DIR}/new/*"
-                    sudo rsync -a "\({WEB_DIR}/" "\){BACKUP_DIR}/new/"
+
+                    sudo rm -rf "${BACKUP_DIR}/new"
+
+                    sudo mkdir -p "${BACKUP_DIR}/new"
+
+                    sudo rsync -a \
+                        "${WEB_DIR}/" \
+                        "${BACKUP_DIR}/new/"
+
                     sudo rm -rf "${BACKUP_CURRENT}"
-                    sudo mv "\({BACKUP_DIR}/new" "\){BACKUP_CURRENT}"
+
+                    sudo mv \
+                        "${BACKUP_DIR}/new" \
+                        "${BACKUP_CURRENT}"
+
                     echo "BACKUP COMPLETED"
                 '''
             }
@@ -164,17 +203,23 @@ No deployment. No second rollback.
 
         stage('Deploy Entire Repository') {
             when {
-                expression { env.SKIP_PIPELINE != "true" }
+                expression {
+                    env.SKIP_PIPELINE != "true"
+                }
             }
+
             steps {
                 script {
                     env.DEPLOYED = "true"
                 }
+
                 sh '''
                     set -e
+
                     echo "========================================"
                     echo "DEPLOYING ENTIRE REPOSITORY"
                     echo "========================================"
+
                     sudo rsync -a \
                         --delete \
                         --exclude=".git" \
@@ -183,6 +228,7 @@ No deployment. No second rollback.
                         --exclude="vendor" \
                         "${WORKSPACE}/" \
                         "${WEB_DIR}/"
+
                     echo "ENTIRE REPOSITORY DEPLOYED"
                 '''
             }
@@ -190,15 +236,21 @@ No deployment. No second rollback.
 
         stage('HTTP Test') {
             when {
-                expression { env.SKIP_PIPELINE != "true" }
+                expression {
+                    env.SKIP_PIPELINE != "true"
+                }
             }
+
             steps {
                 sh '''
                     set -e
+
                     echo "========================================"
                     echo "HTTP TEST"
                     echo "========================================"
+
                     sleep 2
+
                     HTTP_CODE=$(curl \
                         --output /dev/null \
                         --silent \
@@ -207,10 +259,12 @@ No deployment. No second rollback.
                         http://127.0.0.1/)
 
                     echo "HTTP status: ${HTTP_CODE}"
-                    if [ "\({HTTP_CODE}" -lt 200 ] || [ "\){HTTP_CODE}" -ge 400 ]; then
+
+                    if [ "${HTTP_CODE}" -lt 200 ] || [ "${HTTP_CODE}" -ge 400 ]; then
                         echo "HTTP TEST FAILED"
                         exit 1
                     fi
+
                     echo "HTTP TEST PASSED"
                 '''
             }
@@ -218,15 +272,21 @@ No deployment. No second rollback.
 
         stage('Python Selenium Test') {
             when {
-                expression { env.SKIP_PIPELINE != "true" }
+                expression {
+                    env.SKIP_PIPELINE != "true"
+                }
             }
+
             steps {
                 sh '''
                     set -e
+
                     echo "========================================"
                     echo "SELENIUM TEST"
                     echo "========================================"
-                    \({PYTHON} "\){WORKSPACE}/tests/selenium_test.py"
+
+                    "${PYTHON}" "${WORKSPACE}/tests/selenium_test.py"
+
                     echo "SELENIUM TEST PASSED"
                 '''
             }
@@ -234,16 +294,24 @@ No deployment. No second rollback.
 
         stage('Mark Version Good') {
             when {
-                expression { env.SKIP_PIPELINE != "true" }
+                expression {
+                    env.SKIP_PIPELINE != "true"
+                }
             }
+
             steps {
                 sh '''
                     set -e
+
                     echo "========================================"
                     echo "MARKING VERSION AS KNOWN GOOD"
                     echo "========================================"
+
                     sudo mkdir -p "${BACKUP_DIR}"
-                    echo "\({CURRENT_COMMIT}" | sudo tee "\){GOOD_COMMIT_FILE}" > /dev/null
+
+                    echo "${CURRENT_COMMIT}" \
+                        | sudo tee "${GOOD_COMMIT_FILE}" > /dev/null
+
                     echo "Known-good commit: ${CURRENT_COMMIT}"
                     echo "VERSION MARKED AS KNOWN GOOD"
                 '''
@@ -252,6 +320,7 @@ No deployment. No second rollback.
     }
 
     post {
+
         success {
             script {
                 if (env.SKIP_PIPELINE == "true") {
@@ -279,14 +348,18 @@ Current version is known-good.
 
         failure {
             script {
+
                 if (env.SKIP_PIPELINE == "true") {
+
                     echo '''
 ========================================
 ROLLBACK COMMIT
 ========================================
 Rollback loop prevented.
 '''
+
                 } else if (env.DEPLOYED == "false") {
+
                     echo '''
 ========================================
 VALIDATION FAILED BEFORE DEPLOYMENT
@@ -296,18 +369,28 @@ Server was NOT changed.
 GitHub was NOT changed.
 Fix the code and push again.
 '''
+
                 } else {
+
                     echo '''
 ========================================
 DEPLOYMENT FAILED
 ========================================
 Rolling back website...
 '''
+
                     sh '''
                         set +e
+
                         if [ -d "${BACKUP_CURRENT}" ]; then
-                            sudo rsync -a --delete "\({BACKUP_CURRENT}/" "\){WEB_DIR}/"
+
+                            sudo rsync -a \
+                                --delete \
+                                "${BACKUP_CURRENT}/" \
+                                "${WEB_DIR}/"
+
                             echo "WEBSITE ROLLBACK COMPLETED."
+
                         else
                             echo "NO WEBSITE BACKUP FOUND."
                         fi
@@ -323,28 +406,36 @@ Rolling back website...
                     ).trim()
 
                     if (goodCommit == "") {
+
                         echo '''
 ========================================
 NO KNOWN-GOOD COMMIT
 ========================================
 GitHub cannot be automatically restored.
 '''
+
                     } else if (goodCommit == env.CURRENT_COMMIT) {
+
                         echo '''
 ========================================
 CURRENT COMMIT IS KNOWN GOOD
 ========================================
 No GitHub rollback required.
 '''
+
                     } else {
+
                         sh """#!/bin/bash
                             set -e
+
                             cd "${WORKSPACE}"
+
                             echo "========================================"
                             echo "GITHUB ROLLBACK"
                             echo "========================================"
 
                             git fetch origin "${env.GITHUB_BRANCH}"
+
                             REMOTE_COMMIT=\$(git rev-parse "origin/${env.GITHUB_BRANCH}")
 
                             echo "Remote commit: \${REMOTE_COMMIT}"
@@ -356,15 +447,23 @@ No GitHub rollback required.
                             fi
 
                             echo "Known-good commit: ${goodCommit}"
+
                             git cat-file -e "${goodCommit}^{commit}"
 
                             git config user.name "Jenkins"
                             git config user.email "jenkins@localhost"
+
                             git reset --hard "${goodCommit}"
-                            git commit --allow-empty -m "Jenkins rollback: ${env.CURRENT_COMMIT}"
+
+                            git commit \
+                                --allow-empty \
+                                -m "Jenkins rollback: ${env.CURRENT_COMMIT}"
 
                             echo "Pushing known-good version to GitHub..."
-                            git push origin "HEAD:${env.GITHUB_BRANCH}"
+
+                            git push \
+                                origin \
+                                "HEAD:${env.GITHUB_BRANCH}"
 
                             echo "========================================"
                             echo "GITHUB ROLLBACK SUCCESSFUL"
