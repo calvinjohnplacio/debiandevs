@@ -1,6 +1,6 @@
 <?php
 
-echo '<!DOCTYPE html>';s
+echo '<!DOCTYPE html>';sd
 
 echo '<html>';
 
