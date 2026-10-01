@@ -5,7 +5,7 @@ echo '<!DOCTYPE html>';
 echo '<html>';
 
 echo '<head>';
-echo '<title>Lodgins to</title>';
+echo '<title>Losfdgins to</title>';
 echo '</head>';
 
 echo '<body>';
