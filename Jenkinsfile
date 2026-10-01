@@ -69,7 +69,7 @@ No deployment. No second rollback.
             }
         }
 
-       stage('Check All PHP Syntax') {
+        stage('Check All PHP Syntax') {
             when {
                 expression { env.SKIP_PIPELINE != "true" }
             }
@@ -344,13 +344,13 @@ No GitHub rollback required.
                             echo "GITHUB ROLLBACK"
                             echo "========================================"
 
-                            git fetch origin "${GITHUB_BRANCH}"
-                            REMOTE_COMMIT=\\$(git rev-parse "origin/${GITHUB_BRANCH}")
+                            git fetch origin "${env.GITHUB_BRANCH}"
+                            REMOTE_COMMIT=\$(git rev-parse "origin/${env.GITHUB_BRANCH}")
 
-                            echo "Remote commit: \\${REMOTE_COMMIT}"
-                            echo "Failed commit: ${CURRENT_COMMIT}"
+                            echo "Remote commit: \${REMOTE_COMMIT}"
+                            echo "Failed commit: ${env.CURRENT_COMMIT}"
 
-                            if [ "\\${REMOTE_COMMIT}" != "${CURRENT_COMMIT}" ]; then
+                            if [ "\${REMOTE_COMMIT}" != "${env.CURRENT_COMMIT}" ]; then
                                 echo "GitHub changed after Jenkins checkout. Rollback cancelled."
                                 exit 1
                             fi
@@ -361,10 +361,10 @@ No GitHub rollback required.
                             git config user.name "Jenkins"
                             git config user.email "jenkins@localhost"
                             git reset --hard "${goodCommit}"
-                            git commit --allow-empty -m "Jenkins rollback: ${CURRENT_COMMIT}"
+                            git commit --allow-empty -m "Jenkins rollback: ${env.CURRENT_COMMIT}"
 
                             echo "Pushing known-good version to GitHub..."
-                            git push origin "HEAD:${GITHUB_BRANCH}"
+                            git push origin "HEAD:${env.GITHUB_BRANCH}"
 
                             echo "========================================"
                             echo "GITHUB ROLLBACK SUCCESSFUL"
