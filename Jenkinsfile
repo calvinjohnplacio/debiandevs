@@ -20,9 +20,13 @@ pipeline {
 
         BACKUP_DIR = "/var/backups/myapp"
 
+        BACKUP_CURRENT = "/var/backups/myapp/current"
+
         PYTHON = "/opt/selenium-venv/bin/python"
 
         DEPLOYED = "false"
+
+        GITHUB_BRANCH = "main"
     }
 
 
@@ -30,9 +34,9 @@ pipeline {
 
 
         /*
-         * ==========================================
-         * CHECKOUT FROM GITHUB
-         * ==========================================
+         * ==================================================
+         * CHECKOUT
+         * ==================================================
          */
 
         stage('Checkout') {
@@ -46,51 +50,104 @@ pipeline {
                 )
 
                 sh '''
-                    echo "================================"
-                    echo "CHECKOUT"
-                    echo "================================"
+                    set -e
 
-                    echo "Git commit:"
+                    echo "========================================"
+                    echo "CHECKOUT"
+                    echo "========================================"
+
+                    echo ""
+                    echo "Commit:"
                     git rev-parse HEAD
 
                     echo ""
-                    echo "Git branch:"
+                    echo "Branch:"
                     git branch --show-current
 
                     echo ""
-                    echo "Files:"
-                    find . -maxdepth 2 -type f | sort
+                    echo "Commit message:"
+                    git log -1 --pretty=%B
+
+                    echo ""
+                    echo "Checkout completed."
                 '''
             }
         }
 
 
         /*
-         * ==========================================
-         * CHECK ALL PHP FILES
-         * ==========================================
+         * ==================================================
+         * DETECT AUTOMATIC ROLLBACK COMMIT
+         * ==================================================
          *
-         * IMPORTANT:
-         *
-         * This happens BEFORE backup and deployment.
-         *
-         * If PHP has a syntax error:
-         *
-         * Jenkins stops.
-         * /var/www/html is NOT changed.
+         * If the previous Jenkins build created a rollback
+         * commit, do NOT create another rollback loop.
          *
          */
 
+        stage('Check Rollback Commit') {
+
+            steps {
+
+                script {
+
+                    def commitMessage = sh(
+                        script: 'git log -1 --pretty=%B',
+                        returnStdout: true
+                    ).trim()
+
+                    if (commitMessage.startsWith(
+                        'Jenkins rollback:'
+                    )) {
+
+                        echo '''
+========================================
+JENKINS ROLLBACK COMMIT DETECTED
+========================================
+
+This commit was created automatically
+by Jenkins.
+
+Skipping deployment to prevent a
+rollback loop.
+'''
+
+                        currentBuild.result = 'NOT_BUILT'
+
+                        env.SKIP_PIPELINE = "true"
+
+                    } else {
+
+                        env.SKIP_PIPELINE = "false"
+                    }
+                }
+            }
+        }
+
+
+        /*
+         * ==================================================
+         * PHP SYNTAX
+         * ==================================================
+         */
+
         stage('Check PHP Syntax') {
+
+            when {
+
+                expression {
+                    env.SKIP_PIPELINE != "true"
+                }
+            }
 
             steps {
 
                 sh '''
                     set -e
 
-                    echo "================================"
+                    echo "========================================"
                     echo "CHECKING ALL PHP FILES"
-                    echo "================================"
+                    echo "========================================"
 
                     PHP_COUNT=$(find "${WORKSPACE}" \
                         -type f \
@@ -124,30 +181,37 @@ pipeline {
                     fi
 
                     echo ""
-                    echo "================================"
-                    echo "ALL PHP FILES PASSED"
-                    echo "================================"
+                    echo "========================================"
+                    echo "PHP SYNTAX CHECK PASSED"
+                    echo "========================================"
                 '''
             }
         }
 
 
         /*
-         * ==========================================
-         * CHECK PYTHON + SELENIUM + CHROMIUM
-         * ==========================================
+         * ==================================================
+         * SELENIUM ENVIRONMENT
+         * ==================================================
          */
 
         stage('Check Selenium Environment') {
+
+            when {
+
+                expression {
+                    env.SKIP_PIPELINE != "true"
+                }
+            }
 
             steps {
 
                 sh '''
                     set -e
 
-                    echo "================================"
+                    echo "========================================"
                     echo "CHECKING SELENIUM ENVIRONMENT"
-                    echo "================================"
+                    echo "========================================"
 
                     echo ""
                     echo "Python:"
@@ -163,81 +227,90 @@ pipeline {
                     chromium --version
 
                     echo ""
-                    echo "Selenium environment OK."
+                    echo "SELENIUM ENVIRONMENT PASSED"
+                    echo "========================================"
                 '''
             }
         }
 
 
         /*
-         * ==========================================
-         * BACKUP CURRENT PRODUCTION WEBSITE
-         * ==========================================
+         * ==================================================
+         * BACKUP CURRENT WEBSITE
+         * ==================================================
          */
 
-        stage('Backup Current Website') {
+        stage('Backup Current Version') {
+
+            when {
+
+                expression {
+                    env.SKIP_PIPELINE != "true"
+                }
+            }
 
             steps {
 
                 sh '''
                     set -e
 
-                    echo "================================"
-                    echo "BACKING UP CURRENT WEBSITE"
-                    echo "================================"
+                    echo "========================================"
+                    echo "BACKING UP CURRENT VERSION"
+                    echo "========================================"
 
                     sudo mkdir -p "${BACKUP_DIR}"
 
-                    echo ""
-                    echo "Removing old backup..."
+                    sudo rm -rf "${BACKUP_DIR}/new"
 
-                    sudo rm -rf \
-                        "${BACKUP_DIR}/current"
-
-                    echo ""
-                    echo "Creating new backup directory..."
-
-                    sudo mkdir -p \
-                        "${BACKUP_DIR}/current"
-
-                    echo ""
-                    echo "Copying:"
-                    echo "${WEB_DIR}"
-                    echo ""
-                    echo "To:"
-                    echo "${BACKUP_DIR}/current"
+                    sudo mkdir -p "${BACKUP_DIR}/new"
 
                     sudo rsync -a \
                         "${WEB_DIR}/" \
-                        "${BACKUP_DIR}/current/"
+                        "${BACKUP_DIR}/new/"
 
                     echo ""
-                    echo "================================"
-                    echo "BACKUP COMPLETED"
-                    echo "================================"
+                    echo "New backup created."
+
+                    sudo rm -rf "${BACKUP_DIR}/current"
+
+                    sudo mv \
+                        "${BACKUP_DIR}/new" \
+                        "${BACKUP_DIR}/current"
+
+                    echo ""
+                    echo "========================================"
+                    echo "BACKUP READY"
+                    echo "========================================"
                 '''
             }
         }
 
 
         /*
-         * ==========================================
+         * ==================================================
          * DEPLOY
-         * ==========================================
-         *
-         * DEPLOYED=true is set BEFORE rsync.
-         *
-         * This means if rsync partially changes
-         * /var/www/html and then fails, Jenkins
-         * will still attempt rollback.
-         *
+         * ==================================================
          */
 
-        stage('Deploy to /var/www/html') {
+        stage('Deploy') {
+
+            when {
+
+                expression {
+                    env.SKIP_PIPELINE != "true"
+                }
+            }
 
             steps {
 
                 script {
+
+                    /*
+                     * Mark deployment BEFORE rsync.
+                     *
+                     * If rsync fails halfway through,
+                     * rollback will still happen.
+                     */
 
                     env.DEPLOYED = "true"
                 }
@@ -245,19 +318,9 @@ pipeline {
                 sh '''
                     set -e
 
-                    echo "================================"
+                    echo "========================================"
                     echo "DEPLOYING"
-                    echo "================================"
-
-                    echo ""
-                    echo "Source:"
-                    echo "${WORKSPACE}/"
-
-                    echo ""
-                    echo "Destination:"
-                    echo "${WEB_DIR}"
-
-                    echo ""
+                    echo "========================================"
 
                     sudo rsync -a \
                         --delete \
@@ -268,30 +331,35 @@ pipeline {
                         "${WEB_DIR}/"
 
                     echo ""
-                    echo "================================"
                     echo "DEPLOYMENT COMPLETED"
-                    echo "================================"
                 '''
             }
         }
 
 
         /*
-         * ==========================================
-         * BASIC HTTP TEST
-         * ==========================================
+         * ==================================================
+         * HTTP TEST
+         * ==================================================
          */
 
         stage('HTTP Test') {
+
+            when {
+
+                expression {
+                    env.SKIP_PIPELINE != "true"
+                }
+            }
 
             steps {
 
                 sh '''
                     set -e
 
-                    echo "================================"
+                    echo "========================================"
                     echo "HTTP TEST"
-                    echo "================================"
+                    echo "========================================"
 
                     sleep 2
 
@@ -305,48 +373,53 @@ pipeline {
                     echo ""
                     echo "HTTP status: ${HTTP_CODE}"
 
-                    if [ "${HTTP_CODE}" -lt 200 ] || [ "${HTTP_CODE}" -ge 400 ]; then
+                    if [ "${HTTP_CODE}" -lt 200 ] || \
+                       [ "${HTTP_CODE}" -ge 400 ]; then
 
                         echo ""
                         echo "HTTP TEST FAILED."
 
                         exit 1
-
                     fi
 
                     echo ""
-                    echo "================================"
                     echo "HTTP TEST PASSED"
-                    echo "================================"
                 '''
             }
         }
 
 
         /*
-         * ==========================================
+         * ==================================================
          * SELENIUM TEST
-         * ==========================================
+         * ==================================================
          */
 
         stage('Python Selenium Test') {
+
+            when {
+
+                expression {
+                    env.SKIP_PIPELINE != "true"
+                }
+            }
 
             steps {
 
                 sh '''
                     set -e
 
-                    echo "================================"
+                    echo "========================================"
                     echo "PYTHON SELENIUM TEST"
-                    echo "================================"
+                    echo "========================================"
 
                     ${PYTHON} \
                         "${WORKSPACE}/tests/selenium_test.py"
 
                     echo ""
-                    echo "================================"
+                    echo "========================================"
                     echo "SELENIUM TEST PASSED"
-                    echo "================================"
+                    echo "========================================"
                 '''
             }
         }
@@ -354,49 +427,54 @@ pipeline {
 
 
     /*
-     * ==========================================
-     * POST ACTIONS
-     * ==========================================
+     * ======================================================
+     * POST
+     * ======================================================
      */
 
     post {
 
 
         /*
-         * ========================================
+         * ==================================================
          * SUCCESS
-         * ========================================
+         * ==================================================
          */
 
         success {
 
-            echo '''
+            script {
+
+                if (env.SKIP_PIPELINE == "true") {
+
+                    echo '''
+========================================
+ROLLBACK COMMIT DETECTED
+========================================
+
+Automatic rollback commit was detected.
+
+No new deployment was performed.
+'''
+
+                } else {
+
+                    echo '''
 ========================================
 DEPLOYMENT SUCCESSFUL
 ========================================
+
+Website and GitHub are using the new version.
 '''
-
-            sh '''
-                echo ""
-                echo "Current website:"
-                echo "================"
-
-                ls -la "${WEB_DIR}"
-
-                echo ""
-                echo "Website deployed successfully."
-
-                echo ""
-                echo "Backup available at:"
-                echo "${BACKUP_DIR}/current"
-            '''
+                }
+            }
         }
 
 
         /*
-         * ========================================
+         * ==================================================
          * FAILURE
-         * ========================================
+         * ==================================================
          */
 
         failure {
@@ -407,64 +485,132 @@ DEPLOYMENT SUCCESSFUL
 
                     echo '''
 ========================================
-DEPLOYMENT FAILED
+PIPELINE FAILED
 ========================================
-ROLLING BACK TO PREVIOUS VERSION
+
+Restoring previous website version...
+========================================
+'''
+
+                    /*
+                     * --------------------------------------
+                     * RESTORE WEBSITE
+                     * --------------------------------------
+                     */
+
+                    sh '''
+                        set +e
+
+                        if [ -d "${BACKUP_CURRENT}" ]; then
+
+                            echo "Restoring website..."
+
+                            sudo rsync -a \
+                                --delete \
+                                "${BACKUP_CURRENT}/" \
+                                "${WEB_DIR}/"
+
+                            ROLLBACK_STATUS=$?
+
+                            if [ "${ROLLBACK_STATUS}" -eq 0 ]; then
+
+                                echo ""
+                                echo "========================================"
+                                echo "WEBSITE ROLLBACK SUCCESSFUL"
+                                echo "========================================"
+
+                            else
+
+                                echo ""
+                                echo "========================================"
+                                echo "WEBSITE ROLLBACK FAILED"
+                                echo "========================================"
+
+                            fi
+
+                        else
+
+                            echo ""
+                            echo "NO WEBSITE BACKUP FOUND."
+
+                        fi
+                    '''
+
+
+                    /*
+                     * --------------------------------------
+                     * GITHUB ROLLBACK
+                     * --------------------------------------
+                     */
+
+                    echo '''
+========================================
+ROLLING BACK GITHUB
 ========================================
 '''
 
                     sh '''
                         set +e
 
+                        cd "${WORKSPACE}"
+
                         echo ""
-                        echo "Checking backup..."
+                        echo "Current bad commit:"
+                        git rev-parse HEAD
 
-                        if [ -d "${BACKUP_DIR}/current" ]; then
+                        echo ""
+                        echo "Creating GitHub revert..."
 
-                            echo ""
-                            echo "Backup found."
+                        git config user.name "Jenkins"
 
-                            echo ""
-                            echo "Restoring:"
-                            echo "${BACKUP_DIR}/current/"
+                        git config user.email "jenkins@localhost"
 
-                            echo ""
-                            echo "To:"
-                            echo "${WEB_DIR}/"
+                        git revert \
+                            --no-edit \
+                            HEAD
 
-                            sudo rsync -a \
-                                --delete \
-                                "${BACKUP_DIR}/current/" \
-                                "${WEB_DIR}/"
+                        REVERT_STATUS=$?
 
-                            ROLLBACK_STATUS=$?
+                        if [ "${REVERT_STATUS}" -ne 0 ]; then
 
                             echo ""
+                            echo "========================================"
+                            echo "GITHUB REVERT FAILED"
+                            echo "========================================"
 
-                            if [ "${ROLLBACK_STATUS}" -eq 0 ]; then
+                            git revert \
+                                --abort
 
-                                echo "================================"
-                                echo "ROLLBACK COMPLETED"
-                                echo "================================"
+                            exit 1
+                        fi
 
-                            else
+                        echo ""
+                        echo "Revert commit:"
+                        git log -1 --oneline
 
-                                echo "================================"
-                                echo "ROLLBACK FAILED"
-                                echo "================================"
+                        echo ""
+                        echo "Pushing rollback to GitHub..."
 
-                                exit 1
+                        git push origin \
+                            "HEAD:${GITHUB_BRANCH}"
 
-                            fi
+                        PUSH_STATUS=$?
+
+                        if [ "${PUSH_STATUS}" -eq 0 ]; then
+
+                            echo ""
+                            echo "========================================"
+                            echo "GITHUB ROLLBACK SUCCESSFUL"
+                            echo "========================================"
 
                         else
 
-                            echo "================================"
-                            echo "NO BACKUP AVAILABLE"
-                            echo "================================"
+                            echo ""
+                            echo "========================================"
+                            echo "GITHUB ROLLBACK FAILED"
+                            echo "========================================"
 
                             exit 1
-
                         fi
                     '''
 
@@ -472,12 +618,14 @@ ROLLING BACK TO PREVIOUS VERSION
 
                     echo '''
 ========================================
-BUILD FAILED BEFORE DEPLOYMENT
-========================================
-NO ROLLBACK REQUIRED
+PIPELINE FAILED BEFORE DEPLOYMENT
 ========================================
 
-The existing website was not changed.
+The website was not changed.
+
+The GitHub repository was not changed.
+
+No rollback was necessary.
 '''
                 }
             }
@@ -485,16 +633,16 @@ The existing website was not changed.
 
 
         /*
-         * ========================================
+         * ==================================================
          * ALWAYS
-         * ========================================
+         * ==================================================
          */
 
         always {
 
             echo '''
 ========================================
-JENKINS BUILD FINISHED
+JENKINS PIPELINE FINISHED
 ========================================
 '''
         }
