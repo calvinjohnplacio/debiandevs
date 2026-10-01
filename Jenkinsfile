@@ -48,48 +48,33 @@ pipeline {
         }
 
 
-        stage('Check PHP Syntax') {
+       stage('Check PHP Syntax') {
 
-            steps {
+    steps {
 
-                sh '''
-                    set -e
+        sh '''
+            set -e
 
-                    echo "================================"
-                    echo "CHECKING ALL PHP FILES"
-                    echo "================================"
+            echo "================================"
+            echo "CHECKING ALL PHP FILES"
+            echo "================================"
 
-                    PHP_FILES=$(find "${WORKSPACE}" \
-                        -type f \
-                        -name "*.php" \
-                        -not -path "${WORKSPACE}/vendor/*")
+            find "${WORKSPACE}" \
+                -type f \
+                -name "*.php" \
+                -not -path "${WORKSPACE}/vendor/*" \
+                -not -path "${WORKSPACE}@tmp/*" \
+                -print0 |
+            xargs -0 -n1 php -l
 
-                    if [ -z "$PHP_FILES" ]; then
+            echo ""
+            echo "================================"
+            echo "ALL PHP FILES PASSED"
+            echo "================================"
+        '''
+    }
+}
 
-                        echo "No PHP files found."
-
-                    else
-
-                        while IFS= read -r FILE
-                        do
-
-                            echo ""
-                            echo "Checking:"
-                            echo "$FILE"
-
-                            php -l "$FILE"
-
-                        done <<< "$PHP_FILES"
-
-                    fi
-
-                    echo ""
-                    echo "================================"
-                    echo "ALL PHP FILES PASSED"
-                    echo "================================"
-                '''
-            }
-        }
 
 
         stage('Check Python Selenium') {
