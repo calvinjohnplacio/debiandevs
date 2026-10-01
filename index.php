@@ -8,7 +8,7 @@ echo '<head>';
 echo '<title>My PHP App</title>';
 echo '</head>';
 
-echo '<body>';
+echo '<body style="background-color:red">';
 
 echo '<h1 id="title">';
 echo 'My PHP Application';
