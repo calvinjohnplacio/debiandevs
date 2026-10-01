@@ -28,9 +28,11 @@ pipeline {
 
         DEPLOYED = "false"
 
-        SKIP_PIPELINE = "false"
+        SKIP_ROLLBACK = "false"
 
         CURRENT_COMMIT = ""
+
+        GOOD_COMMIT_FILE = "/var/backups/myapp/known_good_commit"
     }
 
 
@@ -39,7 +41,7 @@ pipeline {
 
         /*
          * ==================================================
-         * CHECKOUT
+         * 1. CHECKOUT
          * ==================================================
          */
 
@@ -69,16 +71,15 @@ pipeline {
                     echo "========================================"
 
                     echo ""
-                    echo "Commit:"
+                    echo "Current commit:"
                     git rev-parse HEAD
-
-                    echo ""
-                    echo "Branch:"
-                    git branch --show-current
 
                     echo ""
                     echo "Commit message:"
                     git log -1 --pretty=%B
+
+                    echo ""
+                    echo "Checkout completed."
                 '''
             }
         }
@@ -86,42 +87,41 @@ pipeline {
 
         /*
          * ==================================================
-         * CHECK FOR JENKINS ROLLBACK COMMIT
+         * 2. CHECK IF THIS IS AN AUTOMATIC ROLLBACK
          * ==================================================
          */
 
-        stage('Check Rollback Commit') {
+        stage('Check Automatic Rollback') {
 
             steps {
 
                 script {
 
-                    def commitMessage = sh(
+                    def message = sh(
                         script: 'git log -1 --pretty=%B',
                         returnStdout: true
                     ).trim()
 
-                    if (
-                        commitMessage.startsWith(
-                            'Jenkins rollback:'
-                        )
-                    ) {
+                    if (message.startsWith('Jenkins rollback:')) {
 
                         echo '''
 ========================================
-JENKINS ROLLBACK COMMIT DETECTED
+AUTOMATIC ROLLBACK COMMIT
 ========================================
 
 This commit was created by Jenkins.
 
-Skipping deployment and rollback.
+Pipeline will stop here.
+
+No deployment.
+No second rollback.
 '''
 
-                        env.SKIP_PIPELINE = "true"
+                        env.SKIP_ROLLBACK = "true"
 
                     } else {
 
-                        env.SKIP_PIPELINE = "false"
+                        env.SKIP_ROLLBACK = "false"
                     }
                 }
             }
@@ -130,31 +130,24 @@ Skipping deployment and rollback.
 
         /*
          * ==================================================
-         * PHP SYNTAX CHECK
+         * 3. PHP SYNTAX CHECK
          * ==================================================
          *
-         * IMPORTANT:
+         * THIS IS BEFORE DEPLOYMENT.
          *
-         * This happens BEFORE backup and deployment.
+         * If PHP has an error:
          *
-         * If PHP is broken:
-         *
-         *   PHP check FAILS
-         *       ↓
-         *   Deploy is skipped
-         *       ↓
-         *   Existing website stays unchanged
-         *       ↓
-         *   GitHub rollback happens in post/failure
+         * - Website is NOT changed.
+         * - GitHub is rolled back to known-good commit.
          *
          */
 
-        stage('Check PHP Syntax') {
+        stage('CHECK PHP SYNTAX FIRST') {
 
             when {
 
                 expression {
-                    env.SKIP_PIPELINE != "true"
+                    env.SKIP_ROLLBACK != "true"
                 }
             }
 
@@ -164,7 +157,7 @@ Skipping deployment and rollback.
                     set -e
 
                     echo "========================================"
-                    echo "CHECKING ALL PHP FILES"
+                    echo "CHECKING PHP SYNTAX"
                     echo "========================================"
 
                     PHP_COUNT=$(find "${WORKSPACE}" \
@@ -185,7 +178,7 @@ Skipping deployment and rollback.
                     else
 
                         echo ""
-                        echo "Running PHP syntax checks..."
+                        echo "Running PHP syntax check..."
                         echo ""
 
                         find "${WORKSPACE}" \
@@ -200,7 +193,7 @@ Skipping deployment and rollback.
 
                     echo ""
                     echo "========================================"
-                    echo "PHP SYNTAX CHECK PASSED"
+                    echo "PHP SYNTAX PASSED"
                     echo "========================================"
                 '''
             }
@@ -209,7 +202,7 @@ Skipping deployment and rollback.
 
         /*
          * ==================================================
-         * SELENIUM ENVIRONMENT
+         * 4. SELENIUM ENVIRONMENT
          * ==================================================
          */
 
@@ -218,7 +211,7 @@ Skipping deployment and rollback.
             when {
 
                 expression {
-                    env.SKIP_PIPELINE != "true"
+                    env.SKIP_ROLLBACK != "true"
                 }
             }
 
@@ -228,27 +221,22 @@ Skipping deployment and rollback.
                     set -e
 
                     echo "========================================"
-                    echo "CHECKING SELENIUM ENVIRONMENT"
+                    echo "CHECKING SELENIUM"
                     echo "========================================"
 
-                    echo ""
-                    echo "Python:"
                     ${PYTHON} --version
 
                     echo ""
-                    echo "Selenium:"
 
                     ${PYTHON} -c \
                         "import selenium; print('Selenium:', selenium.__version__)"
 
                     echo ""
-                    echo "Chromium:"
 
                     chromium --version
 
                     echo ""
-                    echo "SELENIUM ENVIRONMENT PASSED"
-                    echo "========================================"
+                    echo "Selenium environment OK."
                 '''
             }
         }
@@ -256,16 +244,16 @@ Skipping deployment and rollback.
 
         /*
          * ==================================================
-         * BACKUP CURRENT WEBSITE
+         * 5. BACKUP WEBSITE
          * ==================================================
          */
 
-        stage('Backup Current Version') {
+        stage('Backup Current Website') {
 
             when {
 
                 expression {
-                    env.SKIP_PIPELINE != "true"
+                    env.SKIP_ROLLBACK != "true"
                 }
             }
 
@@ -275,35 +263,27 @@ Skipping deployment and rollback.
                     set -e
 
                     echo "========================================"
-                    echo "BACKING UP CURRENT VERSION"
+                    echo "BACKUP CURRENT WEBSITE"
                     echo "========================================"
 
                     sudo mkdir -p "${BACKUP_DIR}"
 
-                    sudo rm -rf \
-                        "${BACKUP_DIR}/new"
+                    sudo rm -rf "${BACKUP_DIR}/new"
 
-                    sudo mkdir -p \
-                        "${BACKUP_DIR}/new"
+                    sudo mkdir -p "${BACKUP_DIR}/new"
 
                     sudo rsync -a \
                         "${WEB_DIR}/" \
                         "${BACKUP_DIR}/new/"
 
-                    echo ""
-                    echo "New backup created."
-
-                    sudo rm -rf \
-                        "${BACKUP_CURRENT}"
+                    sudo rm -rf "${BACKUP_CURRENT}"
 
                     sudo mv \
                         "${BACKUP_DIR}/new" \
                         "${BACKUP_CURRENT}"
 
                     echo ""
-                    echo "========================================"
-                    echo "BACKUP READY"
-                    echo "========================================"
+                    echo "Website backup completed."
                 '''
             }
         }
@@ -311,7 +291,7 @@ Skipping deployment and rollback.
 
         /*
          * ==================================================
-         * DEPLOY
+         * 6. DEPLOY
          * ==================================================
          */
 
@@ -320,7 +300,7 @@ Skipping deployment and rollback.
             when {
 
                 expression {
-                    env.SKIP_PIPELINE != "true"
+                    env.SKIP_ROLLBACK != "true"
                 }
             }
 
@@ -329,10 +309,10 @@ Skipping deployment and rollback.
                 script {
 
                     /*
-                     * Mark deployment BEFORE rsync.
+                     * Set BEFORE rsync.
                      *
-                     * This ensures that a partial rsync failure
-                     * also triggers website rollback.
+                     * If rsync partially modifies the website,
+                     * rollback will still happen.
                      */
 
                     env.DEPLOYED = "true"
@@ -342,7 +322,7 @@ Skipping deployment and rollback.
                     set -e
 
                     echo "========================================"
-                    echo "DEPLOYING TO /var/www/html"
+                    echo "DEPLOYING"
                     echo "========================================"
 
                     sudo rsync -a \
@@ -354,9 +334,7 @@ Skipping deployment and rollback.
                         "${WEB_DIR}/"
 
                     echo ""
-                    echo "========================================"
-                    echo "DEPLOYMENT COMPLETED"
-                    echo "========================================"
+                    echo "Deployment completed."
                 '''
             }
         }
@@ -364,7 +342,7 @@ Skipping deployment and rollback.
 
         /*
          * ==================================================
-         * HTTP TEST
+         * 7. HTTP TEST
          * ==================================================
          */
 
@@ -373,7 +351,7 @@ Skipping deployment and rollback.
             when {
 
                 expression {
-                    env.SKIP_PIPELINE != "true"
+                    env.SKIP_ROLLBACK != "true"
                 }
             }
 
@@ -408,9 +386,7 @@ Skipping deployment and rollback.
                     fi
 
                     echo ""
-                    echo "========================================"
-                    echo "HTTP TEST PASSED"
-                    echo "========================================"
+                    echo "HTTP TEST PASSED."
                 '''
             }
         }
@@ -418,7 +394,7 @@ Skipping deployment and rollback.
 
         /*
          * ==================================================
-         * SELENIUM TEST
+         * 8. SELENIUM TEST
          * ==================================================
          */
 
@@ -427,7 +403,7 @@ Skipping deployment and rollback.
             when {
 
                 expression {
-                    env.SKIP_PIPELINE != "true"
+                    env.SKIP_ROLLBACK != "true"
                 }
             }
 
@@ -437,25 +413,61 @@ Skipping deployment and rollback.
                     set -e
 
                     echo "========================================"
-                    echo "PYTHON SELENIUM TEST"
+                    echo "SELENIUM TEST"
                     echo "========================================"
-
-                    if [ ! -f "${WORKSPACE}/tests/selenium_test.py" ]; then
-
-                        echo ""
-                        echo "ERROR:"
-                        echo "tests/selenium_test.py does not exist."
-
-                        exit 1
-                    fi
 
                     ${PYTHON} \
                         "${WORKSPACE}/tests/selenium_test.py"
 
                     echo ""
+                    echo "SELENIUM TEST PASSED."
+                '''
+            }
+        }
+
+
+        /*
+         * ==================================================
+         * 9. MARK CURRENT COMMIT AS KNOWN GOOD
+         * ==================================================
+         *
+         * ONLY happens after:
+         *
+         * PHP PASS
+         * HTTP PASS
+         * Selenium PASS
+         *
+         */
+
+        stage('Mark Version Good') {
+
+            when {
+
+                expression {
+                    env.SKIP_ROLLBACK != "true"
+                }
+            }
+
+            steps {
+
+                sh '''
+                    set -e
+
                     echo "========================================"
-                    echo "SELENIUM TEST PASSED"
+                    echo "MARKING VERSION AS KNOWN GOOD"
                     echo "========================================"
+
+                    sudo mkdir -p "${BACKUP_DIR}"
+
+                    echo "${CURRENT_COMMIT}" | \
+                        sudo tee "${GOOD_COMMIT_FILE}" > /dev/null
+
+                    echo ""
+                    echo "Known-good commit:"
+                    echo "${CURRENT_COMMIT}"
+
+                    echo ""
+                    echo "Version marked as GOOD."
                 '''
             }
         }
@@ -481,14 +493,12 @@ Skipping deployment and rollback.
 
             script {
 
-                if (env.SKIP_PIPELINE == "true") {
+                if (env.SKIP_ROLLBACK == "true") {
 
                     echo '''
 ========================================
 JENKINS ROLLBACK COMMIT
 ========================================
-
-Rollback commit detected.
 
 No deployment performed.
 '''
@@ -504,7 +514,7 @@ PHP:       PASS
 HTTP:      PASS
 SELENIUM:  PASS
 
-The new version is live.
+Current version is now known-good.
 '''
                 }
             }
@@ -515,15 +525,6 @@ The new version is live.
          * ==================================================
          * FAILURE
          * ==================================================
-         *
-         * This executes for:
-         *
-         * - PHP syntax errors
-         * - Selenium errors
-         * - HTTP errors
-         * - deployment errors
-         * - environment errors
-         *
          */
 
         failure {
@@ -531,41 +532,55 @@ The new version is live.
             script {
 
                 /*
-                 * Never rollback a rollback commit.
+                 * ------------------------------------------
+                 * DO NOTHING FOR AUTOMATIC ROLLBACK COMMIT
+                 * ------------------------------------------
                  */
 
-                if (env.SKIP_PIPELINE == "true") {
+                if (env.SKIP_ROLLBACK == "true") {
 
                     echo '''
 ========================================
-ROLLBACK COMMIT
+AUTOMATIC ROLLBACK COMMIT
 ========================================
 
-No second rollback will be performed.
+Rollback loop prevented.
 '''
+                }
 
-                } else {
+                else {
 
 
                     /*
-                     * ======================================
+                     * --------------------------------------
+                     * READ LAST KNOWN-GOOD COMMIT
+                     * --------------------------------------
+                     */
+
+                    def goodCommit = sh(
+                        script: """
+                            if [ -f '${GOOD_COMMIT_FILE}' ]; then
+                                sudo cat '${GOOD_COMMIT_FILE}'
+                            fi
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+
+                    /*
+                     * --------------------------------------
                      * WEBSITE ROLLBACK
-                     * ======================================
-                     *
-                     * If deployment started, restore
-                     * the previous website.
-                     *
+                     * --------------------------------------
                      */
 
                     if (env.DEPLOYED == "true") {
 
                         echo '''
 ========================================
-PIPELINE FAILED
+DEPLOYMENT FAILED
 ========================================
 
-Restoring previous website version...
-========================================
+Restoring previous website...
 '''
 
                         sh '''
@@ -573,31 +588,13 @@ Restoring previous website version...
 
                             if [ -d "${BACKUP_CURRENT}" ]; then
 
-                                echo ""
-                                echo "Restoring website..."
-
                                 sudo rsync -a \
                                     --delete \
                                     "${BACKUP_CURRENT}/" \
                                     "${WEB_DIR}/"
 
-                                STATUS=$?
-
-                                if [ "${STATUS}" -eq 0 ]; then
-
-                                    echo ""
-                                    echo "========================================"
-                                    echo "WEBSITE ROLLBACK SUCCESSFUL"
-                                    echo "========================================"
-
-                                else
-
-                                    echo ""
-                                    echo "========================================"
-                                    echo "WEBSITE ROLLBACK FAILED"
-                                    echo "========================================"
-
-                                fi
+                                echo ""
+                                echo "WEBSITE ROLLBACK COMPLETED."
 
                             else
 
@@ -606,195 +603,164 @@ Restoring previous website version...
 
                             fi
                         '''
+                    }
 
-                    } else {
+                    else {
 
                         echo '''
 ========================================
-NO WEBSITE DEPLOYMENT
+DEPLOYMENT NEVER STARTED
 ========================================
 
-The existing website was not changed.
+Existing website was not modified.
 '''
                     }
 
 
                     /*
-                     * ======================================
+                     * --------------------------------------
                      * GITHUB ROLLBACK
-                     * ======================================
-                     *
-                     * IMPORTANT:
-                     *
-                     * This runs even when PHP syntax
-                     * checking fails.
-                     *
+                     * --------------------------------------
                      */
 
-                    echo '''
+                    if (goodCommit == "") {
+
+                        echo '''
 ========================================
-GITHUB ROLLBACK
+NO KNOWN-GOOD COMMIT
 ========================================
 
-Failed commit:
+This appears to be the first deployment.
+
+GitHub cannot be automatically rolled back
+because Jenkins has no saved known-good
+version yet.
 '''
 
-                    echo "${env.CURRENT_COMMIT}"
+                    }
 
+                    else if (goodCommit == env.CURRENT_COMMIT) {
 
-                    sh '''
-                        set +e
+                        echo '''
+========================================
+CURRENT COMMIT IS ALREADY KNOWN GOOD
+========================================
 
-                        cd "${WORKSPACE}"
+No GitHub rollback required.
+'''
 
-                        echo ""
-                        echo "Fetching latest GitHub main..."
+                    }
 
-                        git fetch origin "${GITHUB_BRANCH}"
+                    else {
 
-                        REMOTE_COMMIT=$(git rev-parse \
-                            "origin/${GITHUB_BRANCH}")
+                        echo '''
+========================================
+ROLLING BACK GITHUB
+========================================
+'''
 
-                        echo ""
-                        echo "Commit Jenkins tested:"
-                        echo "${CURRENT_COMMIT}"
-
-                        echo ""
-                        echo "Current GitHub main:"
-                        echo "${REMOTE_COMMIT}"
-
-
-                        /*
-                         * Safety check.
-                         *
-                         * Only revert if nobody has pushed
-                         * another commit since Jenkins checked
-                         * this commit.
-                         */
-
-                        if [ "${REMOTE_COMMIT}" != "${CURRENT_COMMIT}" ]; then
-
-                            echo ""
-                            echo "========================================"
-                            echo "GITHUB CHANGED"
-                            echo "========================================"
-
-                            echo ""
-                            echo "GitHub main no longer points to the"
-                            echo "commit Jenkins tested."
-
-                            echo ""
-                            echo "GitHub rollback cancelled for safety."
-
-                            exit 1
-                        fi
-
-
-                        /*
-                         * Configure Git identity.
-                         */
-
-                        git config user.name "Jenkins"
-
-                        git config user.email "jenkins@localhost"
-
-
-                        /*
-                         * ==================================
-                         * REVERT NORMAL COMMIT
-                         * ==================================
-                         *
-                         * DO NOT use:
-                         *
-                         * git revert -m 1
-                         *
-                         * for normal commits.
-                         */
+                        echo "Failed commit:"
+                        echo "${env.CURRENT_COMMIT}"
 
                         echo ""
-                        echo "Creating GitHub rollback..."
 
-                        git revert \
-                            --no-edit \
-                            "${CURRENT_COMMIT}"
-
-                        REVERT_STATUS=$?
+                        echo "Known-good commit:"
+                        echo "${goodCommit}"
 
 
-                        if [ "${REVERT_STATUS}" -ne 0 ]; then
+                        sh """
+                            set +e
 
-                            echo ""
-                            echo "========================================"
-                            echo "GITHUB REVERT FAILED"
-                            echo "========================================"
-
-                            git revert --abort
-
-                            exit 1
-                        fi
-
-
-                        /*
-                         * Give the rollback commit a recognizable
-                         * message so Jenkins can detect it when
-                         * the GitHub webhook fires.
-                         */
-
-                        git commit \
-                            --amend \
-                            -m "Jenkins rollback: ${CURRENT_COMMIT}"
-
-                        AMEND_STATUS=$?
-
-
-                        if [ "${AMEND_STATUS}" -ne 0 ]; then
+                            cd '${WORKSPACE}'
 
                             echo ""
-                            echo "========================================"
-                            echo "ROLLBACK COMMIT FAILED"
-                            echo "========================================"
+                            echo "Fetching GitHub..."
 
-                            exit 1
-                        fi
+                            git fetch origin '${GITHUB_BRANCH}'
 
-
-                        echo ""
-                        echo "Rollback commit created:"
-
-                        git log -1 --oneline
-
-
-                        /*
-                         * Push rollback to GitHub.
-                         */
-
-                        echo ""
-                        echo "Pushing rollback to GitHub..."
-
-                        git push \
-                            origin \
-                            "HEAD:${GITHUB_BRANCH}"
-
-                        PUSH_STATUS=$?
-
-
-                        if [ "${PUSH_STATUS}" -eq 0 ]; then
+                            REMOTE_COMMIT=\\$(git rev-parse \
+                                'origin/${GITHUB_BRANCH}')
 
                             echo ""
-                            echo "========================================"
-                            echo "GITHUB ROLLBACK SUCCESSFUL"
-                            echo "========================================"
-
-                        else
+                            echo "Current GitHub commit:"
+                            echo "\\${REMOTE_COMMIT}"
 
                             echo ""
-                            echo "========================================"
-                            echo "GITHUB ROLLBACK FAILED"
-                            echo "========================================"
+                            echo "Expected failed commit:"
+                            echo '${CURRENT_COMMIT}'
 
-                            exit 1
-                        fi
-                    '''
+
+                            if [ "\\${REMOTE_COMMIT}" != '${CURRENT_COMMIT}' ]; then
+
+                                echo ""
+                                echo "GitHub changed after Jenkins checkout."
+
+                                echo "Rollback stopped to avoid overwriting"
+                                echo "another commit."
+
+                                exit 1
+                            fi
+
+
+                            echo ""
+                            echo "Checking known-good commit..."
+
+                            if ! git cat-file -e '${goodCommit}^{commit}'; then
+
+                                echo ""
+                                echo "Known-good commit not available."
+
+                                exit 1
+                            fi
+
+
+                            echo ""
+                            echo "Creating rollback commit..."
+
+                            git config user.name "Jenkins"
+
+                            git config user.email "jenkins@localhost"
+
+
+                            git reset --hard '${goodCommit}'
+
+
+                            git commit \
+                                --allow-empty \
+                                -m "Jenkins rollback: ${CURRENT_COMMIT}"
+
+
+                            echo ""
+                            echo "Rollback commit:"
+                            git log -1 --oneline
+
+
+                            echo ""
+                            echo "Pushing rollback to GitHub..."
+
+                            git push \
+                                origin \
+                                "HEAD:${GITHUB_BRANCH}"
+
+
+                            if [ "\\$?" -eq 0 ]; then
+
+                                echo ""
+                                echo "========================================"
+                                echo "GITHUB ROLLBACK SUCCESSFUL"
+                                echo "========================================"
+
+                            else
+
+                                echo ""
+                                echo "========================================"
+                                echo "GITHUB ROLLBACK FAILED"
+                                echo "========================================"
+
+                                exit 1
+                            fi
+                        """
+                    }
                 }
             }
         }
